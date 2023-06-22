@@ -1,0 +1,77 @@
+import json
+import openai
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.types import ParseMode
+from aiogram.utils import executor
+from aiogram.utils.markdown import text, quote_html
+from aiogram.types.chat import ChatActions
+
+with open("config.json") as f:
+    config = json.load(f)
+
+TELEGRAM_BOT_TOKEN = config["TELEGRAM_BOT_TOKEN"]
+OPENAI_API_KEY = config["OPENAI_API_KEY"]
+
+openai.api_key = OPENAI_API_KEY
+
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+dp = Dispatcher(bot)
+dp.middleware.setup(LoggingMiddleware())
+
+messages_history = [
+    {"role": "system", "content": "Вы - пользователь. Я - GPT-3.5-turbo, ассистент, созданный для ответа на ваши вопросы."}
+]
+
+def update(message):
+    global messages_history
+    messages_history.append(message)
+
+    if len(messages_history) > 10:
+        messages_history.pop(1)  # удаление старых сообщений для избежания проблем с API OpenAI
+
+async def get_gpt_response(prompt):
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=prompt,
+        max_tokens=500,
+        n=1,
+        stop=None,
+        temperature=0.8,
+    )
+    return response.choices[0].text.strip()
+
+@dp.message_handler()
+async def handle_message(message: types.Message):
+    global messages_history
+
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+
+    if message.chat.type == "private":
+        user_text = message.text
+    else:
+        if f"@{bot_username}" not in message.text:
+            return
+        user_text = message.text.replace(f"@{bot_username}", "").strip()
+
+    user_message = {"role": "user", "content": user_text}
+    update(user_message)
+
+    prompt = "".join([f"{m['content']}\n" if m['role'] == 'system' else f"{m['role']}:{m['content']}\n" for m in messages_history[:-1]])
+    prompt += f"user:{user_message['content']}\n"
+    await bot.send_chat_action(message.chat.id, ChatActions.TYPING)
+    gpt_response = await get_gpt_response(prompt)
+    gpt_response = gpt_response.replace("GPT-3.5-turbo:", "Скайнет:")  # замена префикса в ответе
+    assistant_message = {"role": "assistant", "content": gpt_response}
+    update(assistant_message)
+
+    await bot.send_message(
+        chat_id=message.chat.id,
+        text=gpt_response,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+if __name__ == "__main__":
+    from aiogram import executor
+    executor.start_polling(dp, skip_updates=True)
